@@ -85,71 +85,38 @@ private val generatedVariableName = "jsonFromGeneratedCode"
 tasks.register("createGeneratedFile") {
     println("createGeneratedFile")
     doLast {
-        println("createGeneratedFile/doLast")
-        // Open a file in an appropriate place to use as a source code file, create if it doesn't exist
-        var gotSourceDirectory = false
         val sourceDirectory = File("${project.projectDir}/$generatedFilePath")
+        val sourceFile = File(sourceDirectory, generatedFileName)
 
-        if (sourceDirectory.isDirectory) {
-            gotSourceDirectory = true
-        } else if (!sourceDirectory.exists()) {
-            sourceDirectory.mkdirs()
-            gotSourceDirectory = true
+        val sourceFileAlreadyExisted = sourceFile.isFile
+
+        val timeout = if (sourceFileAlreadyExisted) shortTimeout else longTimeout
+
+        var usableGeneratedSourceFileExists = false
+
+        fetchJson(jsonUrl, timeout)?.let { jsonString ->
+            val code = generateCodeFromJson(generatedVariableName, jsonString)
+            val ok = sourceFileAlreadyExisted || makeSureFileExists(sourceDirectory, sourceFile)
+            if (ok) {
+                overwriteFileWithCode(sourceFile, code)
+                usableGeneratedSourceFileExists = true
+            }
+        } ?: run {
+            if (sourceFileAlreadyExisted) {
+                println("socket timed out but we already have a generated source file from earlier")
+                usableGeneratedSourceFileExists = true
+            } else {
+                val msg = "socket timed out. unable to generate kotlin source file from JSON result."
+                println(msg)
+                //error(msg) // = IllegalStateException
+                throw RuntimeException(msg)
+            }
         }
 
-        if (gotSourceDirectory) {
-            // Add the generated code to the project build logic
-            println("adding the generated file path")
-            kotlin {
-                sourceSets {
-                    main {
-                        kotlin {
-                            kotlin.srcDir(generatedFilePath)
-                        }
-                    }
-                }
-            }
+        println("Do we have a usable generated source code file either by writing, overwriting, or from earlier? ${usableGeneratedSourceFileExists}")
 
-            var gotSourceFile = false
-            var sourceFileAlreadyExisted = false
-            val sourceFile = File(sourceDirectory, generatedFileName)
-
-            if (sourceFile.isFile) {
-                gotSourceFile = true
-                sourceFileAlreadyExisted = true
-            } else if (!sourceFile.exists()) {
-                sourceFile.createNewFile()
-                gotSourceFile = true
-            }
-
-            if (gotSourceFile) {
-                // Fetch the JSON
-                val conn: HttpURLConnection = URL(jsonUrl).openConnection() as HttpURLConnection
-                conn.requestMethod = "GET"
-                conn.connectTimeout = if (sourceFileAlreadyExisted) shortTimeout else longTimeout
-
-                try {
-                    println("fetching JSON with timeout of ${conn.connectTimeout}")
-                    conn.connect()
-                    val jsonString = conn.inputStream.bufferedReader().use { it.readText() }
-
-                    // Write Kotlin source code into the file, including the JSON as a string
-                    println("writing kotlin source code into the file")
-                    FileWriter(sourceFile).use { writer ->
-                        writer.write("package ${android.defaultConfig.applicationId}\n\n")
-                        writer.write("internal val $generatedVariableName = \"\"\"\n$jsonString\"\"\"\n")
-                    }
-                } catch (e: SocketTimeoutException) {
-                    if (sourceFileAlreadyExisted)
-                        println("socket timed out but we already have a generated source file from earlier")
-                    else
-                        println("socket timed out. unable to generate kotlin source file from JSON result.")
-                }
-            } else {
-                println("couldn't create generated kotlin source file <project>/$generatedFilePath/$generatedFileName")
-            }
-        } else {
-            println("couldn't create directory for generated source file <project>/$generatedFilePath/")
+        if (usableGeneratedSourceFileExists) {
+            addGeneratedFilePath(generatedFilePath)
         }
     }
 }
@@ -181,14 +148,78 @@ tasks.register("cleanGeneratedFile") {
 
             generatedDir.delete()
             println("Deleted the generated Directory: $generatedDir")
-
         } else {
             println("The generated directory does not exist: $generatedDir")
         }
     }
 }
 
-// Configure the clean task to depend on the custom task
 tasks.named("clean") {
     dependsOn("cleanGeneratedFile")
+}
+
+fun fetchJson(jsonUrl: String, timeout: Int): String? {
+    val conn: HttpURLConnection = URL(jsonUrl).openConnection() as HttpURLConnection
+    conn.requestMethod = "GET"
+    conn.connectTimeout = timeout
+
+    try {
+        println("fetching JSON with timeout of ${conn.connectTimeout}")
+        conn.connect()
+        return conn.inputStream.bufferedReader().use { it.readText() }
+    } catch (e: SocketTimeoutException) {
+        return null
+    }
+}
+
+fun generateCodeFromJson(generatedVariableName: String, jsonString: String): String {
+    val code = StringBuilder()
+    code.append("package ${android.defaultConfig.applicationId}\n\n")
+    code.append("internal val $generatedVariableName = \"\"\"\n$jsonString\"\"\"\n")
+    return code.toString()
+}
+
+fun makeSureFileExists(sourceDirectory: File, sourceFile: File): Boolean {
+    if (sourceFile.isFile)
+        return true
+
+    // returns true if dirs were made but we can proceed if it didn't make them because they already existed
+    if (!sourceDirectory.isDirectory) {
+        try {
+            sourceDirectory.mkdirs()
+        } catch (e: Exception) {
+            // don't return fail yet. maybe the directory was already there
+        }
+    }
+
+    if (sourceDirectory.isDirectory) {
+        return try {
+            sourceFile.createNewFile()
+            return true
+        } catch (e: Exception) {
+            false
+        }
+    }
+    return false
+}
+
+fun overwriteFileWithCode(sourceFile: File, code: String) {
+    println("(over)writing Kotlin source code into the file")
+    FileWriter(sourceFile).use { writer ->
+        writer.write(code)
+    }
+}
+
+fun addGeneratedFilePath(generatedFilePath: String) {
+    // Add the generated code to the project build logic
+    println("adding the generated file path")
+    kotlin {
+        sourceSets {
+            main {
+                kotlin {
+                    kotlin.srcDir(generatedFilePath)
+                }
+            }
+        }
+    }
 }
