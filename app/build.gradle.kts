@@ -194,8 +194,7 @@ fun makeSureFileExists(sourceDirectory: File, sourceFile: File): Boolean {
 
     if (sourceDirectory.isDirectory) {
         return try {
-            sourceFile.createNewFile()
-            return true
+            return sourceFile.createNewFile()
         } catch (e: Exception) {
             false
         }
